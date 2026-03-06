@@ -498,6 +498,7 @@ function endPhase(){
     }
     flash();
     phase='break';remaining=breakMin*60;phaseTotal=breakMin*60;
+    sendNotif('☕ Break time!', `${breakMin} min break. Step away and recharge.`);
     render();startPhaseTick();
   } else {
     addLog('break',breakMin);
@@ -505,6 +506,7 @@ function endPhase(){
     if(soundOn)playBeep('up');
     flash();
     phase='focus';remaining=focusMin*60;phaseTotal=focusMin*60;
+    sendNotif('🎯 Focus time!', `${focusMin} min session. Lock in!`);
     render();startPhaseTick();
   }
 }
@@ -533,6 +535,7 @@ document.getElementById('btn-main').addEventListener('click',()=>{
   if(phase==='idle'){
     phase='focus';remaining=focusMin*60;phaseTotal=focusMin*60;
     running=true;if(soundOn)playBeep('up');
+    sendNotif('🎯 Session started!', `${focusMin} min focus. You got this!`);
     render();startPhaseTick();startElapTick();
   } else if(running){
     stopTicks();running=false;render();
@@ -718,73 +721,85 @@ ambientVol.addEventListener('input', () => {
 });
 
 // ── Browser Notifications ──────────────────────────────────────────────────
-// Compatibility notes:
-// - Chrome/Brave desktop: full support
-// - Firefox desktop: full support
-// - Safari 16.4+ (macOS/iOS): supported via permission prompt
-// - Chrome Android: supported but requires HTTPS (GitHub Pages = HTTPS ✓)
-// - Firefox Android: supported
-// - iOS Safari < 16.4: NOT supported — we gracefully do nothing
-// - Notification() constructor must be called after user gesture on some browsers
-
 const NOTIF_SUPPORTED = (function() {
-  try { return 'Notification' in window; } catch(e) { return false; }
+  try { return ('Notification' in window); } catch(e) { return false; }
 })();
 
-// Use the promise-based requestPermission (older callback form causes errors in some browsers)
-function requestNotifPermission(callback) {
-  if (!NOTIF_SUPPORTED) { if (callback) callback(); return; }
-  if (Notification.permission === 'granted') { if (callback) callback(); return; }
-  if (Notification.permission === 'denied') { if (callback) callback(); return; }
-  // Must be called from a user gesture
-  try {
-    const p = Notification.requestPermission();
-    // Some old browsers return undefined instead of a Promise
-    if (p && typeof p.then === 'function') {
-      p.then(() => { if (callback) callback(); }).catch(() => { if (callback) callback(); });
-    } else {
-      if (callback) callback();
-    }
-  } catch(e) { if (callback) callback(); }
+// Show a permission banner at the top of the page asking user to enable notifications
+function showNotifBanner() {
+  if (document.getElementById('notif-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'notif-banner';
+  banner.innerHTML = `
+    <span>🔔 Enable notifications to get alerts when sessions end</span>
+    <button id="notif-banner-yes">Enable</button>
+    <button id="notif-banner-no">✕</button>
+  `;
+  banner.style.cssText = `
+    position:fixed;top:56px;left:0;right:0;z-index:400;
+    background:rgba(232,37,58,0.15);border-bottom:1px solid rgba(232,37,58,0.3);
+    backdrop-filter:blur(12px);padding:0.6rem 1rem;
+    display:flex;align-items:center;justify-content:center;gap:0.75rem;
+    font-size:0.82rem;font-weight:600;color:#f2f2f2;
+  `;
+  banner.querySelector('#notif-banner-yes').style.cssText = `
+    background:#e8253a;color:#fff;border:none;border-radius:8px;
+    padding:0.3rem 0.85rem;font-size:0.8rem;font-weight:800;cursor:pointer;
+    font-family:inherit;
+  `;
+  banner.querySelector('#notif-banner-no').style.cssText = `
+    background:transparent;color:#aaa;border:none;cursor:pointer;
+    font-size:1rem;padding:0 0.3rem;
+  `;
+  document.body.appendChild(banner);
+
+  banner.querySelector('#notif-banner-yes').addEventListener('click', function() {
+    // This click IS the user gesture — request permission directly here
+    try {
+      const p = Notification.requestPermission();
+      if (p && typeof p.then === 'function') {
+        p.then(function(perm) {
+          if (perm === 'granted') {
+            sendNotif('🔔 Notifications enabled!', 'You will be alerted when sessions end.');
+          }
+        }).catch(function(){});
+      }
+    } catch(e) {}
+    removeBanner();
+  });
+
+  banner.querySelector('#notif-banner-no').addEventListener('click', removeBanner);
 }
 
-let toastTimer = null;
-function showToast(msg) {
-  const el = document.getElementById('toast');
-  if (!el) return;
-  el.textContent = msg;
-  el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+function removeBanner() {
+  const b = document.getElementById('notif-banner');
+  if (b) b.remove();
 }
 
 function sendNotif(title, body) {
-  const msg = title + ' ' + body;
-  // Always show in-app toast regardless of notification support
-  showToast(msg);
-
+  // Always show in-app toast
+  showToast(title + '  ' + body);
+  // Browser notification
   if (!NOTIF_SUPPORTED) return;
   if (Notification.permission !== 'granted') return;
   try {
-    setTimeout(() => {
-      try {
-        const n = new Notification(title, {
-          body: body,
-          tag: 'lockin-timer',
-          renotify: true,
-          requireInteraction: false,
-          silent: false
-        });
-        n.onclick = () => { try { window.focus(); } catch(e){} n.close(); };
-      } catch(e) {}
-    }, 100);
+    var n = new Notification(title, {
+      body: body,
+      tag: 'lockin-timer',
+      renotify: true,
+      requireInteraction: false,
+      silent: false
+    });
+    n.onclick = function() { try { window.focus(); } catch(e){} n.close(); };
   } catch(e) {}
 }
 
-// Request permission on first Start click (must be inside user gesture)
-document.getElementById('btn-main').addEventListener('click', function askOnce() {
-  requestNotifPermission();
-  document.getElementById('btn-main').removeEventListener('click', askOnce);
+// When user clicks Start for the first time, show the banner (if permission not already decided)
+document.getElementById('btn-main').addEventListener('click', function showBannerOnce() {
+  if (NOTIF_SUPPORTED && Notification.permission === 'default') {
+    showNotifBanner();
+  }
+  document.getElementById('btn-main').removeEventListener('click', showBannerOnce);
 });
 
 // Wallpaper picker
